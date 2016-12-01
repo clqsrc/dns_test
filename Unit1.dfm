@@ -32,4 +32,11 @@ object Form1: TForm1
     Left = 176
     Top = 32
   end
+  object IdTCPClient1: TIdTCPClient
+    MaxLineAction = maException
+    ReadTimeout = 0
+    Port = 0
+    Left = 216
+    Top = 32
+  end
 end

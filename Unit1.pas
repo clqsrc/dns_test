@@ -13,7 +13,12 @@ type
     UdpSocket1: TUdpSocket;
     IdUDPClient1: TIdUDPClient;
     IdTCPClient1: TIdTCPClient;
+    Edit1: TEdit;
+    Memo1: TMemo;
+    Button2: TButton;
+    txtDns: TComboBox;
     procedure Button1Click(Sender: TObject);
+    procedure Button2Click(Sender: TObject);
   private
     { Private declarations }
   public
@@ -425,6 +430,8 @@ begin
 
   host := 'www.baidu.com';
   //host := 'lib.csdn.net';
+  host := Edit1.Text;
+
   host := GetHostPack(host);
 
   treq.Query.QNAME := host;
@@ -464,7 +471,8 @@ begin
 
   //--------------------------------------------------
 
-  IdUDPClient1.Send('114.114.114.114', 53, req);
+  //IdUDPClient1.Send('114.114.114.114', 53, req);
+  IdUDPClient1.Send(txtDns.Text, 53, req);
 
   res := IdUDPClient1.ReceiveString();
 
@@ -568,6 +576,456 @@ begin
 
 
   mem.Free;
+
+  //--------------------------------------------------
+  for i := 0 to Length(tres.IP)-1 do
+  begin
+    Memo1.Lines.Add(tres.ip[i]);
+  end;
+
+end;
+
+procedure TForm1.Button2Click(Sender: TObject);
+var
+  req:string;
+  res:string;
+  b1:TBits;
+  host:string;
+  treq:TDnsRequest;
+  reqTag:VDnsHead_tag;
+  mem:TMemoryStream;
+  tres:TDnsResponse; //回应报文
+  i,k:Integer;
+  ip:string;
+  resLen:Integer;
+  reqLen:Integer;
+  tcpLen:int16;
+
+
+  //从应答中读出一个域名,刚好它是 #0 结尾的,所以可以简化
+  function ReadName:string;
+  var
+    j:Integer;
+    c:AnsiChar;
+    oldPos:Integer; //因为有两字节表示指针的部分,所以要记录当前的位置
+    offset:uint16;
+    tmp:string;
+    _count:Integer;
+  begin
+
+
+    Result := '';
+    _count := 0;
+
+    while mem.Position < mem.Size do
+    begin
+
+      //--------------------------------------------------
+      //要先看看是不是指针,指针的话是两个字节表示位置,同时在第一个字节的前两位为11 即  11000000 (0xC0)(192)
+      oldPos := mem.Position;
+      mem.Read(c, 1);
+      if Byte(c)>=192 then
+      begin
+        mem.Position := oldPos; //这个读取只是试探性的,所以要恢复位置
+        mem.Read(offset, 2);
+        //offset := offset and
+        offset := ntohs(offset);
+        offset := offset - $C000; //0xC000 = 49152
+
+        //OFFSET字段指定相对于消息开始处（就是域首部中ID字段的第一个字节）的偏移量。0 偏移量指的是 ID 字段的第一个字节，等等。
+        //即原始完整数据 res 的起始位置
+
+        tmp := Copy(res, offset+1, Length(res));
+        tmp := PAnsiChar(tmp); //不能全部要,#0 后的要去掉 //其实这里面的数据也可能会有指针,不过要解析这种的话就要用递归了,所以算了
+        Result := Result + tmp;
+
+        //mem.Position := mem.Position + Length(tmp);
+
+        Break; //指针的格式在域名时只会出现在末端,所以得跳出,因为这时就结束了,再读取一个 0 是不对的
+
+        //Exit;
+      end
+      //--------------------------------------------------
+      //正常的是一个字节的长度加字符串
+      else
+      begin
+        if c = #0 then Break;
+
+        SetLength(tmp, Byte(c));
+        mem.Read(tmp[1], Byte(c));
+
+        if Result<>'' then Result := Result + '.';
+
+        Result := Result + tmp;
+      end;
+
+      if mem.Position>=mem.Size  //长度保护
+      then Break;
+
+      Inc(_count);
+      if _count>1000 //次数保护
+      then Break;
+
+    end;//while
+
+
+    Exit;
+
+    //--------------------------------------------------
+    for j := mem.Position to mem.Size-1 do
+    begin
+      mem.Read(c, 1);
+
+      Result := Result + c;
+
+      if c = #0 then Break;
+    end;
+
+    //mem.Position := oldPos;
+  end;
+
+
+  //从应答中读出一个域名,可递归的,读取后要回到当前位置//raw 是原始字符串 //level 是递归的层次,防止死循环
+  function ReadName2(const raw:string; const level:Integer):string;
+  var
+    j:Integer;
+    c:AnsiChar;
+    oldPos:Integer; //因为有两字节表示指针的部分,所以要记录当前的位置
+    offset:uint16;
+    tmp:string;
+    _count:Integer;
+    fmem:TMemoryStream;
+  begin
+    Result := '';
+
+    //if level > 1 then Exit; //递归层次保护
+    if level > 9 then Exit; //递归层次保护
+
+    fmem := TMemoryStream.Create;
+    //fmem.WriteBuffer(res[1], Length(res));
+    fmem.WriteBuffer(raw[1], Length(raw));
+    fmem.Seek(0, soFromBeginning);
+
+    //--------------------------------------------------
+
+    Result := '';
+    _count := 0;
+
+    while fmem.Position < fmem.Size do
+    begin
+
+      //--------------------------------------------------
+      //要先看看是不是指针,指针的话是两个字节表示位置,同时在第一个字节的前两位为11 即  11000000 (0xC0)(192)
+      oldPos := fmem.Position;
+      fmem.Read(c, 1);
+      if Byte(c)>=192 then
+      begin
+        fmem.Position := oldPos; //这个读取只是试探性的,所以要恢复位置
+        fmem.Read(offset, 2);
+
+        offset := ntohs(offset);
+        offset := offset - $C000; //0xC000 = 49152
+
+        //OFFSET字段指定相对于消息开始处（就是域首部中ID字段的第一个字节）的偏移量。0 偏移量指的是 ID 字段的第一个字节，等等。
+        //即原始完整数据 res 的起始位置
+
+        tmp := Copy(res, offset+1, Length(res));
+        ////tmp := PAnsiChar(tmp); //不能全部要,#0 后的要去掉 //其实这里面的数据也可能会有指针,不过要解析这种的话就要用递归了,所以算了
+
+        tmp := ReadName2(tmp, level + 1);//真正的算法应该递归
+
+        if Result<>'' then Result := Result + '.';
+
+        Result := Result + tmp;
+
+        //fmem.Position := fmem.Position + Length(tmp);
+
+        Break; //指针的格式在域名时只会出现在末端,所以得跳出,因为这时就结束了,再读取一个 0 是不对的
+
+        //Exit;
+      end
+      //--------------------------------------------------
+      //正常的是一个字节的长度加字符串
+      else
+      begin
+        if c = #0 then Break;
+
+        SetLength(tmp, Byte(c));
+        fmem.Read(tmp[1], Byte(c));
+
+        if Result<>'' then Result := Result + '.';
+
+        Result := Result + tmp;
+      end;
+
+      if fmem.Position>=fmem.Size  //长度保护
+      then Break;
+
+      Inc(_count);
+      if _count>1000 //次数保护
+      then Break;
+
+    end;//while
+
+
+    fmem.Free;
+
+  end;
+
+  //从应答中读出原始字符串
+  function ReadName_raw:string;
+  var
+    j:Integer;
+    c:AnsiChar;
+    oldPos:Integer; //因为有两字节表示指针的部分,所以要记录当前的位置
+    offset:uint16;
+    tmp:string;
+    _count:Integer;
+  begin
+
+
+    Result := '';
+    _count := 0;
+
+    while mem.Position < mem.Size do
+    begin
+
+      //--------------------------------------------------
+      //要先看看是不是指针,指针的话是两个字节表示位置,同时在第一个字节的前两位为11 即  11000000 (0xC0)(192)
+      oldPos := mem.Position;
+      mem.Read(c, 1);
+      if Byte(c)>=192 then
+      begin
+        mem.Position := oldPos; //这个读取只是试探性的,所以要恢复位置
+        //mem.Read(offset, 2);
+        SetLength(tmp, 2);
+        mem.Read(tmp[1], 2);
+
+
+        Result := Result + tmp;
+
+        //mem.Position := mem.Position + Length(tmp);
+
+        Break; //指针的格式在域名时只会出现在末端,所以得跳出,因为这时就结束了,再读取一个 0 是不对的
+
+        //Exit;
+      end
+      //--------------------------------------------------
+      //正常的是一个字节的长度加字符串
+      else
+      begin
+        Result := Result + c;
+        if c = #0 then Break;
+
+        SetLength(tmp, Byte(c));
+        mem.Read(tmp[1], Byte(c));
+
+        //if Result<>'' then Result := Result + '.';
+
+        Result := Result + tmp;
+      end;
+
+      if mem.Position>=mem.Size  //长度保护
+      then Break;
+
+      Inc(_count);
+      if _count>1000 //次数保护
+      then Break;
+
+    end;//while
+
+  end;
+
+
+begin
+
+  req := '';
+  res := '';
+
+  host := 'www.baidu.com';
+  //host := 'lib.csdn.net';
+  host := Edit1.Text;
+
+  host := GetHostPack(host);
+
+  treq.Query.QNAME := host;
+  treq.Query.QTYPE := htons(1);//$f; // A=0x01, MX=0x0F,
+  ////treq.QTYPE := htons($f);//$f; // A=0x01, MX=0x0F,
+  treq.Query.QCLASS := htons(1); // internet
+
+  FillChar(treq.Head, SizeOf(treq.Head), 0);
+  Randomize();
+  treq.Head.ID := Trunc((Now - Trunc(Now)) * 100000) + Random(10000);
+  treq.Head.QDCOUNT := htons(1);//1;  //一个请求
+
+  //treq.Head.Tag;
+
+  //--------------------------------------------------
+  FillChar(reqTag, SizeOf(reqTag), 0);
+  reqTag.QR := 0; //1为响应，0为查询。
+  reqTag.RD := 1; //希望得到递归回答//只有它才可能为 1,所以实际上 Flags 对请求来说可以是固定是,不需要位操作的
+
+  ////
+  treq.Head.Flags := htons($100);//0;
+  //treq.Head.Flags := 0; //好象没影响 //实际上 Flags 对请求来说可以是固定是,不需要位操作的//见上面
+  //--------------------------------------------------
+
+  mem := TMemoryStream.Create;
+
+  //mem.WriteBuffer('aaa'[1], 3);
+  mem.WriteBuffer(tcpLen, SizeOf(tcpLen)); //tcp 要先写两字节的长度
+  mem.WriteBuffer(treq.Head, SizeOf(treq.Head));
+  //ShowMessage(IntToStr(Length(treq.QNAME)));
+  mem.WriteBuffer(treq.Query.QNAME[1], Length(treq.Query.QNAME));
+  mem.WriteBuffer(treq.Query.QTYPE, SizeOf(treq.Query.QTYPE));
+  mem.WriteBuffer(treq.Query.QCLASS, SizeOf(treq.Query.QCLASS));
+
+  tcpLen := mem.Size - 2;              //tcp 要先写两字节的长度
+  tcpLen := htons(tcpLen);             //tcp 要先写两字节的长度
+  mem.Seek(0, soFromBeginning);     //tcp 要先写两字节的长度
+  mem.WriteBuffer(tcpLen, SizeOf(tcpLen)); //tcp 要先写两字节的长度
+
+  SetLength(req, mem.size);
+  mem.Seek(0, soFromBeginning);
+  mem.ReadBuffer(req[1], mem.size);
+
+  //--------------------------------------------------
+
+  ////IdUDPClient1.Send('114.114.114.114', 53, req);
+  ////res := IdUDPClient1.ReceiveString();
+
+  //reqLen := IdUDPClient1.Send(txtDns.Text, 53, req);
+  IdTCPClient1.Host := txtDns.Text;
+  IdTCPClient1.Port := 53;
+  IdTCPClient1.Disconnect;
+  IdTCPClient1.Connect(10*1000);
+  reqLen := IdTCPClient1.Socket.Send(req[1], Length(req));
+  Memo1.Lines.Add(IntToStr(reqLen));
+  res := ''; SetLength(res, 4096);
+  //Sleep(5*1000);
+  if IdTCPClient1.Socket.Readable(5*1000) = False then
+  begin
+    Memo1.Lines.Add('read error');
+    Exit;
+  end;  
+  resLen := IdTCPClient1.Socket.Recv(res[1], Length(res));
+  SetLength(res, resLen);
+  Memo1.Lines.Add(IntToStr(resLen));
+
+
+
+
+  //--------------------------------------------------
+  //解析结果
+  mem.Clear;
+
+  res := Copy(res, 1+2, Length(res));  //mem.WriteBuffer(tcpLen, SizeOf(tcpLen)); //tcp 要先写两字节的长度//这样不行,因为还要算域名指针偏移量,所以应该直接减少原始字符串的
+
+
+  mem.WriteBuffer(res[1], Length(res));
+  mem.Seek(0, soFromBeginning);
+
+  //mem.WriteBuffer(tcpLen, SizeOf(tcpLen)); //tcp 要先写两字节的长度//这样不行,因为还要算域名指针偏移量,所以应该直接减少原始字符串的
+
+  FillChar(tres.Head, SizeOf(tres.Head), 0);
+  mem.ReadBuffer(tres.Head, SizeOf(tres.Head));
+
+  tres.Head.QDCOUNT := ntohs(tres.Head.QDCOUNT);
+  tres.Head.ANCOUNT := ntohs(tres.Head.ANCOUNT);
+
+  //实际上要先读出请求
+  if tres.Head.QDCOUNT > 0 then
+  begin
+    //
+    SetLength(tres.Queries, tres.Head.QDCOUNT);
+
+    for i := 0 to tres.Head.QDCOUNT-1 do
+    begin
+      tres.Queries[i].QNAME := ReadName();
+      mem.ReadBuffer(tres.Queries[i].QTYPE, SizeOf(tres.Queries[i].QTYPE));
+      mem.ReadBuffer(tres.Queries[i].QCLASS, SizeOf(tres.Queries[i].QCLASS));
+
+
+      tres.Queries[i].QTYPE := htons(tres.Queries[i].QTYPE);
+      tres.Queries[i].QCLASS := htons(tres.Queries[i].QCLASS);
+
+    end;
+
+  end;
+
+
+
+  if tres.Head.ANCOUNT > 0 then
+  begin //如果有答复内容
+    //
+    SetLength(tres.Answers, tres.Head.ANCOUNT);
+    SetLength(tres.IP, tres.Head.ANCOUNT);
+
+    for i := 0 to tres.Head.ANCOUNT-1 do
+    begin
+      //tres.Answers[i].RNAME := ReadName();
+      //mem.ReadBuffer(tres.Answers[i].RNAME_P, SizeOf(tres.Answers[i].RNAME_P));
+      //tres.Answers[i].RNAME := ReadName();
+      tres.Answers[i].RNAME := ReadName_raw();
+
+      tres.Answers[i].RNAME := ReadName2(tres.Answers[i].RNAME, 1); //test 只是验证算法,因为有递归,实际应用中不要用
+
+      mem.ReadBuffer(tres.Answers[i].RTYPE, SizeOf(tres.Answers[i].RTYPE));
+      mem.ReadBuffer(tres.Answers[i].RCLASS, SizeOf(tres.Answers[i].RCLASS));
+      mem.ReadBuffer(tres.Answers[i].RTTL, SizeOf(tres.Answers[i].RTTL));
+      mem.ReadBuffer(tres.Answers[i].RDLENGTH, SizeOf(tres.Answers[i].RDLENGTH));
+
+      tres.Answers[i].RTTL := ntohl(tres.Answers[i].RTTL);
+      tres.Answers[i].RDLENGTH := htons(tres.Answers[i].RDLENGTH);
+
+      SetLength(tres.Answers[i].RDATA, tres.Answers[i].RDLENGTH);
+      FillChar(tres.Answers[i].RDATA[1], tres.Answers[i].RDLENGTH, 0);
+      mem.ReadBuffer(tres.Answers[i].RDATA[1], tres.Answers[i].RDLENGTH); //这个有点特殊,要小心 //对于 A 和 MX 请求这里应该就是 4 字节或者 6 字节(ipv6的情况下) ip ////AAAA=0x1c,//IPV6资源记录。
+
+      ip := '';
+      tres.Answers[i].RTYPE := ntohs(tres.Answers[i].RTYPE);
+
+      if tres.Answers[i].RTYPE = 5 then //5 是 CNAME
+      begin
+        for k := 1 to Length(tres.Answers[i].RDATA) do
+        begin
+          ip := ip + tres.Answers[i].RDATA[k]; //cname 的时候就是域名的别名,不用算点分结构//实际上这里面还含有指针,例如 www.baidu.com 的第一个
+        end;
+
+        ip := ReadName2(tres.Answers[i].RDATA, 1); //test 只是验证算法,因为有递归,实际应用中不要用
+
+
+      end
+      else
+      //if tres.Answers[i].RTYPE = 1 then //1 是 A 记录,但是有可能是 mx 记录,所以直接解析成 ip 好了
+      begin
+
+        for k := 1 to Length(tres.Answers[i].RDATA) do
+        begin
+          ip := ip + IntToStr(Byte(tres.Answers[i].RDATA[k]));
+
+          if k < Length(tres.Answers[i].RDATA) then
+            ip := ip + '.';
+        end;
+
+
+      end;
+
+      tres.IP[i] := ip;
+
+    end;
+
+  end;
+
+
+  mem.Free;
+
+  //--------------------------------------------------
+  for i := 0 to Length(tres.IP)-1 do
+  begin
+    Memo1.Lines.Add(tres.ip[i]);
+  end;
+
 
 end;
 
